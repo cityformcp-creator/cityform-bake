@@ -1,0 +1,12 @@
+# Bake outputs — too large for git, lives on R2 / GitHub Releases.
+bake-sample/
+bake-output/
+
+# Geonames raw dump — regenerable via `select_tiles.py --refresh`.
+data/_geonames_cache.json
+
+# Python cruft.
+__pycache__/
+*.pyc
+.venv/
+.python-version
