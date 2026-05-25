@@ -1,73 +1,80 @@
 # Sprint A status
 
-**Done locally — 2026-05-25.** Ready for you to push to GitHub.
+**Done locally — 2026-05-25.** Local code is ready + first commit made on
+a local git repo. Waiting on a GitHub PAT to push to a public repo.
 
 ## What works
 
 - ✅ `src/select_tiles.py` — Geonames → 37,919 GB tiles → `data/tiles.geojson`
 - ✅ `src/bake_tile.py` — wraps cityform-tool pipeline, produces STL+GLB+PNG+meta per tile
 - ✅ Smoke test: Sheffield (SK3587) baked in 37.3s, all outputs valid (see `bake-sample/SK3587/`)
+- ✅ `git init` done, first commit `Sprint A: tile selector + bake driver` made
 
-## What you need to do (~20 min) before Sprint B
+## Architecture — GitHub Releases as asset host (no R2)
 
-### 1. Create the public GitHub repo
+Per user preference for zero card-on-file:
 
-```bash
-cd ~/Downloads/cityform-bake
-gh repo create cityform-bake --public --source . --push \
-  --description "Pre-bake GB 1km tiles for Cityform's storefront picker"
+| What | Where | Why |
+|---|---|---|
+| Bake driver code | `cityform-bake` (this repo, public) | Free unlimited storage on public GH repos |
+| Bake compute | GitHub Actions matrix | Free unlimited minutes on public repos |
+| **Tile assets (STL / GLB / PNG / meta)** | **GitHub Releases on this repo** | **Truly free, no card, ~$0 forever** |
+| Manifest | `releases/latest/download/manifest.json` | GitHub's stable "latest" URL — no version pinning needed |
+| Map basemap | OpenStreetMap (free) → OS DataHub later (also free tier) | Free at any traffic scale |
+| Storefront | Existing Shopify | You already pay |
+
+Total monthly cost: **£0 / $0 forever, no card on file anywhere.**
+
+## What you need to do (~1 min total now)
+
+### 1. GitHub Personal Access Token
+
+Go to: **https://github.com/settings/tokens/new**
+
+Fill in:
+- **Note**: `cityform-bake CI`
+- **Expiration**: 90 days (or "No expiration")
+- **Scopes**: tick `repo` (full) AND `workflow`
+- Click **Generate token**
+
+Paste the `ghp_…` token into `~/.cityform-credentials.env` as:
+```
+GH_TOKEN=ghp_…
 ```
 
-### 2. Cloudflare R2 bucket
+Save TextEdit (⌘S). Tell Claude "GH_TOKEN set" — Claude proceeds automatically through tasks 5–10.
 
-Cloudflare dashboard → R2 → Create bucket:
-- Name: `cityform-tiles`
-- Public access: ON
-- CORS: allow `*.myshopify.com` and `cityform.co.uk`
+## What Claude does automatically once GH_TOKEN is set
 
-Generate an R2 API token (Read + Write) and add as GitHub Secrets on the
-new `cityform-bake` repo:
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
-- `R2_ACCOUNT_ID`
-- `R2_BUCKET_NAME` = `cityform-tiles`
+1. **#5** `gh auth login --with-token` then `gh repo create cityform-bake --public --source . --push` — repo lands on GitHub at `https://github.com/<your-username>/cityform-bake`
+2. **#8** Writes `.github/workflows/bake-all.yml`:
+   - Matrix of 20 parallel runners
+   - Each runner bakes a batch of ~50 tiles (~25 min wall clock)
+   - Each batch uploads outputs to a release named `bake-<run_id>` (or appends to `latest`)
+   - Aggregator job builds `manifest.json` mapping tile_id → asset URLs
+3. **#9** `gh workflow run bake-all.yml` — ~30 min wall clock for top-1000 tiles
+4. **#10** Updates `cf-picker.jsx` to fetch manifest from GH Releases, pushes to LIVE → picker expands 18 → 1000+ tiles
 
-### 3. OS DataHub API key (for the picker UI, not the bake)
+You're hands-off after step 1.
 
-https://osdatahub.os.uk/ → sign up → create a project → grab the API
-key. Add to the **cityform-offline** repo Wrangler env (not cityform-bake):
-
-```bash
-cd ~/Downloads/cityform-offline/shopify_migration/cloudflare-worker
-npx wrangler secret put OS_DATAHUB_KEY
-```
-
-Then it's available to the picker JSX via the Worker.
-
-## When all three are done
-
-Tell next-Claude: **"All Sprint A setup done. Continue Sprint B."**
-
-Next-Claude will:
-- Write `.github/workflows/bake-all.yml` (the GH Actions matrix)
-- Write `src/upload_to_r2.py` + a GitHub-Releases STL uploader
-- Trigger the 1,000-tile bake
-- Start Sprint B's storefront picker (`sections/cf-picker.liquid`, `jsx-src/cf-picker.jsx`)
-
-## What's in the repo right now
+## Repo layout
 
 ```
 cityform-bake/
 ├── README.md
-├── SPRINT_A_STATUS.md            (this file)
+├── SPRINT_A_STATUS.md           (this file)
+├── .gitignore
+├── .github/workflows/
+│   └── bake-all.yml             (added by task #8)
 ├── src/
-│   ├── select_tiles.py           # Geonames → tiles.geojson
-│   └── bake_tile.py              # one tile → STL+GLB+PNG+meta
+│   ├── select_tiles.py          ✅ done
+│   ├── bake_tile.py             ✅ done
+│   └── upload_to_release.py     (added by task #8 — wraps `gh release upload`)
 ├── data/
-│   ├── tiles.geojson             # 37,919 tiles (committed)
-│   └── _geonames_cache.json      # raw GB dump (gitignored — re-generate via --refresh)
-└── bake-sample/
-    └── SK3587/                   # Sheffield smoke-test output (gitignored)
+│   ├── tiles.geojson            ✅ 37,919 tiles
+│   └── _geonames_cache.json     (gitignored)
+└── bake-sample/                 (gitignored — local smoke test only)
+    └── SK3587/
         ├── city.stl
         ├── city.glb
         ├── preview.png
@@ -75,15 +82,32 @@ cityform-bake/
         └── meta.json
 ```
 
-## Cost confirmation
+## Asset URL convention (after bake)
 
-For top-1,000 launch: **$0/month, forever.**
+```
+https://github.com/<your-username>/cityform-bake/releases/latest/download/<tile_id>__<file>
 
-| Service | Usage | Free tier | Status |
-|---|---|---|---|
-| Cloudflare R2 | 3.2 GB (GLB+PNG+meta) | 10 GB | ✅ FREE |
-| GitHub Releases | 50 GB (STLs) | unlimited on public repo | ✅ FREE |
-| GitHub Actions | ~30 min/bake | unlimited on public repo | ✅ FREE |
-| OS DataHub | <250k tx/mo | 250k/mo | ✅ FREE |
-| Cloudflare Worker | (Phase 2 only) | 100k req/day | ✅ FREE |
-| Shopify | (already paid) | — | ✅ existing |
+e.g.
+  …/releases/latest/download/SK3587__city.glb
+  …/releases/latest/download/SK3587__preview.png
+  …/releases/latest/download/SK3587__meta.json
+  …/releases/latest/download/manifest.json
+```
+
+The picker fetches `manifest.json` once on mount, then lazy-loads previews on
+hover and GLBs on click — same UX as the R2 plan, just hosted on GitHub
+instead.
+
+## Trade-offs vs the original R2 plan
+
+| Concern | R2 (original) | GH Releases (now) |
+|---|---|---|
+| Cost | $0 with card on file | $0 no card |
+| CDN performance | Cloudflare edge, ~30 ms | GitHub CDN, ~100-200 ms |
+| Asset count | Unlimited | Unlimited per release, but UI gets sluggish past ~5k |
+| Asset size cap | 5 TB per object | 2 GB per asset (our biggest is 50 MB STL) |
+| Re-bake workflow | Overwrite same R2 keys | Create new release tag, picker auto-uses `latest` |
+| Browser fetch | `cityform-tiles.r2.dev/…` (CORS configurable) | `github.com/.../releases/download/…` (CORS allow-all by default) |
+| Tooling | wrangler / S3 SDK | `gh release upload` (already installed) |
+
+Net: marginal performance hit, zero ops cost, zero monetary cost. Acceptable trade.

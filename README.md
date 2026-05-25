@@ -4,21 +4,26 @@ Batch pre-render every populated 1 km × 1 km tile in Great Britain so the
 Cityform storefront can offer a custom-area picker without running a
 server per order.
 
-Output of this repo goes to a public Cloudflare R2 bucket
-(`cityform-tiles`), one folder per tile keyed by OS National Grid
-reference (e.g. `SK35/SK3587/`). Each folder holds:
+Output of this repo is uploaded as **GitHub Release assets** on this
+repo — no Cloudflare R2, no AWS S3, no card on file anywhere. Each
+release tag covers one bake run, the `latest` tag always points at the
+freshest output. The Cityform storefront's picker fetches the manifest
+from `releases/latest/download/manifest.json` and lazy-loads per-tile
+GLB/PNG assets from the same release.
+
+Asset naming convention (flat per release):
 
 ```
-SK3587/
-  meta.json     # centre lat/lng, OS grid, nearest place, build timestamp
-  city.stl      # print-ready STL (build mesh + LIDAR terrain + buildings)
-  city.glb      # Draco-compressed GLB for storefront 3D viewer (~600 KB)
-  preview.png   # 512×512 top-down PNG thumbnail for picker hover state
+SK3587__city.stl       (print-ready STL — only the fulfilment workflow reads this)
+SK3587__city.glb       (storefront 3D viewer)
+SK3587__preview.png    (picker hover thumbnail)
+SK3587__meta.json      (per-tile metadata)
+manifest.json          (aggregate list of every tile + its asset URLs)
 ```
 
-A separate Cloudflare Worker handles the runtime piece (customer's
-browser uploads the customised label SVG + cart properties), but that's
-in `cityform-offline/shopify_migration/cloudflare-worker/`, not here.
+The runtime piece (customer's browser → tile selection → /cart/add)
+lives in `cityform-offline/shopify_migration/jsx-src/cf-picker.jsx` —
+the picker reads from this repo's releases, not from anywhere else.
 
 ## Build steps
 
@@ -27,10 +32,10 @@ in `cityform-offline/shopify_migration/cloudflare-worker/`, not here.
 python3 src/select_tiles.py --out data/tiles.geojson
 
 # 2. Bake one tile locally (smoke test)
-python3 src/bake_tile.py --tile SK3587 --out bake-sample/
+python3 src/bake_tile.py --tile-id SK3587 --lat 53.380 --lng -1.464 --out bake-sample/SK3587
 
-# 3. Full bake via GitHub Actions matrix
-gh workflow run bake-all.yml
+# 3. Full bake via GitHub Actions matrix (after .github/workflows/bake-all.yml exists)
+gh workflow run bake-all.yml -f tile_limit=1000
 ```
 
 ## Repo layout
@@ -38,18 +43,19 @@ gh workflow run bake-all.yml
 ```
 cityform-bake/
 ├── src/
-│   ├── select_tiles.py    # Overpass query → tiles.geojson
-│   ├── bake_tile.py       # one tile → STL + GLB + PNG
-│   └── upload_to_r2.py    # rclone-based R2 sync
+│   ├── select_tiles.py        # Geonames query → tiles.geojson
+│   ├── bake_tile.py           # one tile → STL + GLB + PNG + meta
+│   └── upload_to_release.py   # wraps `gh release upload`
 ├── data/
-│   └── tiles.geojson      # ~30k populated GB tiles (committed)
-├── bake-sample/           # local smoke-test outputs (gitignored)
+│   └── tiles.geojson          # ~38k populated GB tiles (committed)
+├── bake-sample/               # local smoke-test outputs (gitignored)
 └── .github/workflows/
-    └── bake-all.yml       # matrix of N runners × M tiles each
+    └── bake-all.yml           # matrix of N runners × M tiles each
 ```
 
 ## Dependencies
 
 The bake driver shells out to `cityform-tool`'s `auto_tier3.py` for the
-LIDAR fetch + STL build. You need the full `cityform-offline` repo
+LIDAR fetch + STL build. The full `cityform-offline` repo needs to be
 checked out alongside this one (or specify its path with `CITYFORM_TOOL`).
+On GitHub Actions, the workflow does `git clone cityform-offline` first.
