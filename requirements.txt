@@ -1,0 +1,23 @@
+# Python deps for the tile bake. Install with:
+#   pip install -r requirements.txt
+#
+# These need wheels for Linux (GH Actions ubuntu-latest) and macOS
+# (your laptop). Versions pinned to what cityform-tool was tested with;
+# bumping is fine but re-run the Sheffield smoke test after.
+
+# HTTP + geo
+requests>=2.31
+pyproj>=3.6
+
+# Raster handling (LIDAR DTM/DSM)
+rasterio>=1.3
+scipy>=1.11
+
+# Mesh handling
+numpy>=1.26
+trimesh>=4.0
+pyfqmr>=0.1.1
+pymeshfix>=0.16
+
+# Preview PNG rendering (optional — render.py)
+scikit-image>=0.22

@@ -27,17 +27,23 @@ import time
 from pathlib import Path
 
 
-# Discover cityform-tool. Allow override via env so the GH Actions
-# checkout layout can differ from the local dev layout.
-CITYFORM_TOOL = Path(os.environ.get(
-    "CITYFORM_TOOL",
-    Path(__file__).resolve().parent.parent.parent / "cityform-offline" / "cityform-tool",
-))
+# Use the vendored cityform-tool subset that ships with this repo. The
+# four files in vendor/ are sufficient for the bake — see
+# vendor/README.md for the snapshot date + how to re-sync. Falling back
+# to the full cityform-tool checkout via the CITYFORM_TOOL env var is
+# still supported for ad-hoc local runs against an unvendored copy.
+VENDOR = Path(__file__).resolve().parent.parent / "vendor"
+CITYFORM_TOOL_OVERRIDE = os.environ.get("CITYFORM_TOOL")
 
-if not CITYFORM_TOOL.exists():
-    sys.exit(f"cityform-tool not found at {CITYFORM_TOOL} — set CITYFORM_TOOL env var")
-
-sys.path.insert(0, str(CITYFORM_TOOL))
+if CITYFORM_TOOL_OVERRIDE:
+    source = Path(CITYFORM_TOOL_OVERRIDE)
+    if not source.exists():
+        sys.exit(f"CITYFORM_TOOL={source} does not exist")
+    sys.path.insert(0, str(source))
+elif VENDOR.exists():
+    sys.path.insert(0, str(VENDOR))
+else:
+    sys.exit(f"no vendor/ dir at {VENDOR} and CITYFORM_TOOL env var unset")
 
 # Imports below depend on sys.path patched above.
 from pyproj import Transformer    # noqa: E402
@@ -84,7 +90,11 @@ def bake(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if cache_dir is None:
-        cache_dir = CITYFORM_TOOL / "cache"
+        # WCSFetcher caches downloaded LIDAR GeoTIFFs here. Sharing the
+        # cache across tile bakes saves bandwidth — neighbouring tiles
+        # often share LIDAR cells. Repo-local so it's per-bake-run on
+        # GH Actions, persistent on local dev.
+        cache_dir = VENDOR.parent / ".lidar-cache"
 
     timings: dict[str, float] = {}
     t_start = time.time()

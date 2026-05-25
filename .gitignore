@@ -1,6 +1,10 @@
-# Bake outputs — too large for git, lives on R2 / GitHub Releases.
+# Bake outputs — too large for git, live on GitHub Releases.
 bake-sample/
 bake-output/
+.lidar-cache/
+
+# manifest.json built locally for testing
+/manifest.json
 
 # Geonames raw dump — regenerable via `select_tiles.py --refresh`.
 data/_geonames_cache.json
