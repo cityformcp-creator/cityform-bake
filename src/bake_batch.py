@@ -52,20 +52,29 @@ def _gh_release_upload(release_tag: str, files: list[Path],
 
 
 def _flatten_outputs(tile_id: str, src_dir: Path, dst_dir: Path) -> list[Path]:
-    """Rename baked outputs from <src_dir>/{city.stl,city.glb,…} to
-    <dst_dir>/<tile_id>__<file> so they sit flat in the release.
+    """Rename baked outputs to <dst_dir>/<tile_id>__<file> for release upload.
 
-    We DELIBERATELY skip uploading meta.json and preview.png — their
-    data lives in the aggregated manifest.json (built by build_manifest.py
-    in the manifest job). Skipping them halves our asset-per-tile count
-    from 4 → 2, doubling how many tiles fit under GitHub's 1000-asset-
-    per-release cap. See task #15 for proper sharding."""
+    Asset-upload policy (storage-conscious):
+      city.glb     UPLOADED — the picker fetches this for the 3D preview.
+      city.stl     NOT UPLOADED — STLs are ~99% of bake bytes (avg 200 MB
+                   each vs 3 MB for the GLB). Fulfilment re-bakes from
+                   the saved cart coords via cityform-tool's /api/generate
+                   when an order ships, so we don't need to keep the STL
+                   long-term.  Doubles tile-per-release fit from 500 → 1000.
+      meta.json    NOT UPLOADED — data lives in the aggregated manifest.
+      preview.png  NOT UPLOADED — picker uses the GLB rendered live.
+
+    If you ever need the STL to be the source of truth (e.g. to guarantee
+    byte-identical fulfilment), flip ``UPLOAD_STL = True`` below and
+    re-trigger the bake."""
+    UPLOAD_STL = False
+
     dst_dir.mkdir(parents=True, exist_ok=True)
-    mapping = {
-        "city.stl": f"{tile_id}__city.stl",
+    mapping: dict[str, str] = {
         "city.glb": f"{tile_id}__city.glb",
-        # meta.json + preview.png intentionally omitted — see docstring.
     }
+    if UPLOAD_STL:
+        mapping["city.stl"] = f"{tile_id}__city.stl"
     out: list[Path] = []
     for src_name, dst_name in mapping.items():
         src = src_dir / src_name
