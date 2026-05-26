@@ -98,6 +98,8 @@ def main() -> int:
                    help="Path to coverage_index.json. MUST match split_batches.py.")
     p.add_argument("--skip-baked-tags", default="",
                    help="Comma-separated release tags to skip. MUST match split_batches.py.")
+    p.add_argument("--offset", type=int, default=0,
+                   help="Skip first N candidates. MUST match split_batches.py.")
     args = p.parse_args()
 
     fc = json.loads(Path(args.tiles).read_text())
@@ -129,6 +131,8 @@ def main() -> int:
                     already.add(name.split("__", 1)[0])
         features = [t for t in features
                     if t["properties"]["tile_id"] not in already]
+    if args.offset:
+        features = features[args.offset:]
     all_features = features[:args.limit]
     start = args.batch_idx * args.batch_size
     end = min(start + args.batch_size, len(all_features))

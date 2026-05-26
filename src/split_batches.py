@@ -47,6 +47,11 @@ def main() -> int:
                    help="GeoJSON of all candidate tiles (sorted by importance)")
     p.add_argument("--limit", type=int, default=1000,
                    help="Top-N tiles to bake")
+    p.add_argument("--offset", type=int, default=0,
+                   help="Skip the first N candidates (after admin1/coverage/"
+                        "skip-baked filters) before taking --limit. Lets you "
+                        "shard a big run across multiple workflow invocations "
+                        "without re-baking the front of the list.")
     p.add_argument("--batch-size", type=int, default=50,
                    help="Tiles per matrix job (smaller=more parallelism)")
     p.add_argument("--admin1", default="",
@@ -85,6 +90,10 @@ def main() -> int:
                  if t["properties"]["tile_id"] not in already]
         print(f"  skip-baked filter ({len(tags)} tags, {len(already)} ids): "
               f"{before} → {len(tiles)}", file=sys.stderr)
+    if args.offset:
+        before = len(tiles)
+        tiles = tiles[args.offset:]
+        print(f"  offset {args.offset}: {before} → {len(tiles)}", file=sys.stderr)
     n_tiles = min(len(tiles), args.limit)
     n_batches = (n_tiles + args.batch_size - 1) // args.batch_size
 

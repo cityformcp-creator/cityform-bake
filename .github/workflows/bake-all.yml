@@ -25,6 +25,10 @@ on:
         description: "Comma-separated release tags whose tiles are already baked — they'll be excluded so this run targets only NEW tiles."
         type: string
         default: ""
+      offset:
+        description: "Skip the first N candidates after all filters (sharding handle: bake A with offset=0, bake B with offset=500 = disjoint halves of 1000)."
+        type: number
+        default: 0
 
 # `gh release` calls inside the workflow need write access on the
 # repo's contents. The default GITHUB_TOKEN has read on contents — bump
@@ -62,7 +66,8 @@ jobs:
             --batch-size ${{ inputs.batch_size }} \
             --admin1 "${{ inputs.admin1_filter }}" \
             $COV_FLAG \
-            --skip-baked-tags "${{ inputs.skip_baked_tags }}")
+            --skip-baked-tags "${{ inputs.skip_baked_tags }}" \
+            --offset ${{ inputs.offset }})
           echo "Split output: $OUT"
           # Push each top-level key from the JSON onto GITHUB_OUTPUT.
           echo "batches=$(echo "$OUT" | jq -c .batches)"     >> $GITHUB_OUTPUT
@@ -137,7 +142,8 @@ jobs:
             --release-tag ${{ needs.prep.outputs.release_tag }} \
             --admin1 "${{ inputs.admin1_filter }}" \
             $COV_FLAG \
-            --skip-baked-tags "${{ inputs.skip_baked_tags }}"
+            --skip-baked-tags "${{ inputs.skip_baked_tags }}" \
+            --offset ${{ inputs.offset }}
 
   manifest:
     name: Build manifest.json
