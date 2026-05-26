@@ -150,9 +150,16 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
     #  6 feature_class  7 feature_code
     #  8 country_code  9 cc2  10 admin1  11 admin2  12 admin3  13 admin4
     # 14 population  15 elevation  16 dem  17 timezone  18 mod_date
+    #
+    # admin1 for UK records is the constituent-country code:
+    #   ENG = England, SCT = Scotland, WLS = Wales, NIR = Northern Ireland.
+    # We filter to ENG ONLY because the bake currently uses Environment
+    # Agency LIDAR which only covers England. Scotland/Wales/NI would need
+    # alternative LIDAR sources (SEPA, NRW) — see task #17.
     places: list[dict[str, Any]] = []
     skipped_class = 0
     skipped_code = 0
+    skipped_non_eng = 0
     for line in raw.splitlines():
         cols = line.split("\t")
         if len(cols) < 15:
@@ -163,6 +170,10 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
         code = cols[7]
         if code not in FEATURE_RANK:
             skipped_code += 1
+            continue
+        admin1 = cols[10]
+        if admin1 != "ENG":
+            skipped_non_eng += 1
             continue
         try:
             lat = float(cols[4])
@@ -176,10 +187,11 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
             "lng": lng,
             "feature_code": code,
             "population": pop,
+            "admin1": admin1,
         })
-    print(f"[geonames] {len(places)} populated places "
-          f"(skipped: {skipped_class} non-P class, {skipped_code} excluded codes)",
-          file=sys.stderr)
+    print(f"[geonames] {len(places)} populated places in England "
+          f"(skipped: {skipped_class} non-P, {skipped_code} excluded codes, "
+          f"{skipped_non_eng} non-ENG)", file=sys.stderr)
     return places
 
 
