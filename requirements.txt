@@ -8,6 +8,7 @@
 # HTTP + geo
 requests>=2.31
 pyproj>=3.6
+shapely>=2.0          # OSM polygon manipulation (tier3_with_water)
 
 # Raster handling (LIDAR DTM/DSM)
 rasterio>=1.3

@@ -4,17 +4,30 @@ Inputs: tile_id (OS grid ref like "SK3587") + centre lat/lng.
 Outputs: <out_dir>/{city.stl, city.glb, preview.png, meta.json}
 
 Wraps the existing cityform-tool pipeline (no logic duplicated):
-  pipeline.wcs.WCSFetcher    — pulls EA LIDAR DTM + DSM tiles
-  tier3_measured_roofs       — builds the print STL from DTM + DSM
-  pipeline.preview_mesh      — STL → compact GLB for the storefront viewer
-  render                     — STL → top-down preview PNG
+  pipeline.wcs.WCSFetcher          — pulls EA LIDAR DTM + DSM tiles
+  pipeline.overpass.OverpassFetcher — pulls OSM water/bridges/landmarks/roads
+  tier3_with_water                  — builds the print STL with full finish:
+                                       water flattened, roads engraved,
+                                       bridges as separate decks, landmark
+                                       heights overridden by OSM 3D tags
+  pipeline.preview_mesh             — STL → compact GLB for storefront viewer
+  render                            — STL → top-down preview PNG
 
-Designed to run anywhere with the cityform-tool source available, set
-the CITYFORM_TOOL env var to point at it (defaults to
-"../../cityform-offline/cityform-tool" relative to this file).
+This matches the Flask app's /api/generate pipeline byte-for-byte, so
+the picker's preview models are catalogue-quality (not the noisy
+LIDAR-only output of the original `tier3_measured_roofs` path).
 
-The OUTPUT of this script is what gets uploaded to Cloudflare R2 by the
-GitHub Actions workflow. No web/Shopify/Etsy state is touched here.
+OSM fetches are best-effort: any individual failure falls back silently
+to "no polygons of that type" rather than aborting the bake. A tile
+with no water fetched still produces a valid STL — just without the
+water cuts. The bake never aborts on transient network issues.
+
+Designed to run anywhere with cityform-tool source available, set the
+CITYFORM_TOOL env var to point at it (defaults to vendored copy in
+../vendor/ shipped with this repo).
+
+OUTPUT of this script is what gets uploaded to GitHub Releases by the
+GH Actions workflow. No web/Shopify/Etsy state is touched here.
 """
 
 from __future__ import annotations
@@ -49,8 +62,9 @@ else:
 from pyproj import Transformer    # noqa: E402
 
 from pipeline.wcs import WCSFetcher                      # noqa: E402
+from pipeline.overpass import OverpassFetcher            # noqa: E402
 from pipeline.preview_mesh import generate_preview_glb   # noqa: E402
-import tier3_measured_roofs                              # noqa: E402
+import tier3_with_water                                  # noqa: E402
 
 try:
     import render as _render
@@ -70,6 +84,7 @@ Z_EXAGGERATION = 1.0    # no vertical scaling (matches catalogue default)
 
 
 _WGS84_TO_BNG = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=True)
+_BNG_TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
 
 
 def bake(
@@ -119,14 +134,68 @@ def bake(
     timings["fetch_lidar_s"] = round(time.time() - t0, 2)
     print(f"[bake] LIDAR fetched in {timings['fetch_lidar_s']}s")
 
-    # 3. Build STL.
+    # 3. Fetch OSM water + bridges + landmarks + roads. Each fetch is
+    # best-effort: a failure → empty list, bake continues with whatever
+    # polygons made it back.
+    lat_min, lng_min = _BNG_TO_WGS84.transform(bng_e_min, bng_n_min)[::-1]
+    lat_max, lng_max = _BNG_TO_WGS84.transform(bng_e_max, bng_n_max)[::-1]
+    # WGS84 transform returns (lng, lat) — reorder above flipped that.
+
+    t0 = time.time()
+    osm_cache = cache_dir / "osm"
+    osm_cache.mkdir(parents=True, exist_ok=True)
+    osm_fetcher = OverpassFetcher(cache_dir=osm_cache)
+
+    def _safe_fetch(name, fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:    # noqa: BLE001
+            print(f"[warn] OSM fetch '{name}' failed: {exc} — continuing without",
+                  file=sys.stderr)
+            return {"features": []}
+
+    water_geojson    = _safe_fetch("water",     osm_fetcher.fetch_water,     lat_min, lng_min, lat_max, lng_max)
+    coast_geojson    = _safe_fetch("coastline", osm_fetcher.fetch_coastline, lat_min, lng_min, lat_max, lng_max)
+    bridge_geojson   = _safe_fetch("bridges",   osm_fetcher.fetch_bridges,   lat_min, lng_min, lat_max, lng_max)
+    landmark_geojson = _safe_fetch("landmarks", osm_fetcher.fetch_landmarks, lat_min, lng_min, lat_max, lng_max)
+    road_geojson     = _safe_fetch("roads",     osm_fetcher.fetch_roads,     lat_min, lng_min, lat_max, lng_max)
+    timings["fetch_osm_s"] = round(time.time() - t0, 2)
+
+    # Convert each GeoJSON feature set to BNG polygons via the helpers
+    # vendored from tier3_with_water.
+    water_polys = tier3_with_water.osm_features_to_bng_polygons(
+        water_geojson.get("features", []) or [])
+    # Coastlines need separate conversion — they're LineStrings that get
+    # polygonised against the bbox into sea polygons.
+    coast_feats = coast_geojson.get("features", []) or []
+    if coast_feats:
+        sea_polys = tier3_with_water.coastline_features_to_sea_polygons(
+            coast_feats, centre_e, centre_n, SIZE_M)
+        water_polys = list(water_polys) + list(sea_polys)
+    bridge_polys = tier3_with_water.osm_bridge_features_to_bng_geoms(
+        bridge_geojson.get("features", []) or [], line_buffer_m=4.0)
+    landmark_polys = tier3_with_water.osm_features_to_bng_polygons(
+        landmark_geojson.get("features", []) or [])
+    road_polys = tier3_with_water.osm_road_features_to_bng_geoms(
+        road_geojson.get("features", []) or [])
+    print(f"[bake] OSM fetched in {timings['fetch_osm_s']}s "
+          f"(water={len(water_polys)}, bridges={len(bridge_polys)}, "
+          f"landmarks={len(landmark_polys)}, roads={len(road_polys)})")
+
+    # 4. Build STL with the full pipeline — water flattened, roads
+    # engraved, bridges as separate decks, landmark heights honoured.
     stl_path = out_dir / "city.stl"
     t0 = time.time()
-    tier3_measured_roofs.build_tier3_stl(
+    tier3_with_water.build_tier3_with_water_stl(
         dsm_path=str(dsm_path), dtm_path=str(dtm_path),
         centre_east=centre_e, centre_north=centre_n,
         size_m=SIZE_M, print_w_mm=PRINT_MM, plinth_mm=PLINTH_MM,
-        z_exaggeration=Z_EXAGGERATION, out_path=str(stl_path),
+        z_exaggeration=Z_EXAGGERATION,
+        water_polygons_bng=water_polys,
+        bridge_polygons_bng=bridge_polys,
+        landmark_polygons_bng=landmark_polys,
+        road_polygons_bng=road_polys,
+        out_path=str(stl_path),
     )
     timings["build_stl_s"] = round(time.time() - t0, 2)
     stl_mb = stl_path.stat().st_size / 1e6

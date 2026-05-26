@@ -52,15 +52,19 @@ def _gh_release_upload(release_tag: str, files: list[Path],
 
 
 def _flatten_outputs(tile_id: str, src_dir: Path, dst_dir: Path) -> list[Path]:
-    """Rename baked outputs from <src_dir>/{city.stl,city.glb,preview.png,meta.json}
-    to <dst_dir>/<tile_id>__{stl,glb,png,json} so they sit flat in the
-    release."""
+    """Rename baked outputs from <src_dir>/{city.stl,city.glb,…} to
+    <dst_dir>/<tile_id>__<file> so they sit flat in the release.
+
+    We DELIBERATELY skip uploading meta.json and preview.png — their
+    data lives in the aggregated manifest.json (built by build_manifest.py
+    in the manifest job). Skipping them halves our asset-per-tile count
+    from 4 → 2, doubling how many tiles fit under GitHub's 1000-asset-
+    per-release cap. See task #15 for proper sharding."""
     dst_dir.mkdir(parents=True, exist_ok=True)
     mapping = {
-        "city.stl":     f"{tile_id}__city.stl",
-        "city.glb":     f"{tile_id}__city.glb",
-        "preview.png":  f"{tile_id}__preview.png",
-        "meta.json":    f"{tile_id}__meta.json",
+        "city.stl": f"{tile_id}__city.stl",
+        "city.glb": f"{tile_id}__city.glb",
+        # meta.json + preview.png intentionally omitted — see docstring.
     }
     out: list[Path] = []
     for src_name, dst_name in mapping.items():
