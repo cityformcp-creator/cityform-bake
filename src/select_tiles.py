@@ -153,13 +153,17 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
     #
     # admin1 for UK records is the constituent-country code:
     #   ENG = England, SCT = Scotland, WLS = Wales, NIR = Northern Ireland.
-    # We filter to ENG ONLY because the bake currently uses Environment
-    # Agency LIDAR which only covers England. Scotland/Wales/NI would need
-    # alternative LIDAR sources (SEPA, NRW) — see task #17.
+    # As of 2026-05, the bake supports ENG (EA WCS), WLS (NRW WFS + Azure)
+    # and SCT (Scottish Remote Sensing Portal via AWS Open Data). N. Ireland
+    # is excluded because no national LIDAR programme exists.
+    #
+    # See pipeline/sources.py for the per-country backend wiring.
+    BUILDABLE_ADMIN1 = {"ENG", "WLS", "SCT"}
     places: list[dict[str, Any]] = []
     skipped_class = 0
     skipped_code = 0
-    skipped_non_eng = 0
+    skipped_non_buildable = 0
+    by_admin1: dict[str, int] = {}
     for line in raw.splitlines():
         cols = line.split("\t")
         if len(cols) < 15:
@@ -172,8 +176,8 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
             skipped_code += 1
             continue
         admin1 = cols[10]
-        if admin1 != "ENG":
-            skipped_non_eng += 1
+        if admin1 not in BUILDABLE_ADMIN1:
+            skipped_non_buildable += 1
             continue
         try:
             lat = float(cols[4])
@@ -189,9 +193,12 @@ def fetch_geonames_places() -> list[dict[str, Any]]:
             "population": pop,
             "admin1": admin1,
         })
-    print(f"[geonames] {len(places)} populated places in England "
-          f"(skipped: {skipped_class} non-P, {skipped_code} excluded codes, "
-          f"{skipped_non_eng} non-ENG)", file=sys.stderr)
+        by_admin1[admin1] = by_admin1.get(admin1, 0) + 1
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(by_admin1.items()))
+    print(f"[geonames] {len(places)} buildable populated places ({breakdown}). "
+          f"Skipped: {skipped_class} non-P, {skipped_code} excluded codes, "
+          f"{skipped_non_buildable} non-buildable (e.g. NIR)",
+          file=sys.stderr)
     return places
 
 
@@ -219,6 +226,7 @@ def build_tiles(places: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "place_type": place["feature_code"],
             "rank": rank,
             "population": place["population"],
+            "admin1": place["admin1"],
         }
 
         existing = by_cell.get(tile_id)
@@ -254,6 +262,7 @@ def to_geojson(tiles: list[dict[str, Any]]) -> dict[str, Any]:
                 "place": t["name"],
                 "place_type": t["place_type"],
                 "population": t["population"],
+                "admin1": t.get("admin1", ""),
                 "centre_lat": round(centre_lat, 6),
                 "centre_lng": round(centre_lng, 6),
                 "bng_easting": round(easting, 1),

@@ -90,10 +90,19 @@ def main() -> int:
                    help="Release tag to upload outputs to (must already exist)")
     p.add_argument("--out-root", default="./bake-output",
                    help="Per-tile output dirs go under here (gitignored)")
+    p.add_argument("--admin1", default="",
+                   help="Comma-separated admin1 codes to include. MUST match "
+                        "what split_batches.py was invoked with — otherwise "
+                        "the batch_idx slicing won't line up.")
     args = p.parse_args()
 
     fc = json.loads(Path(args.tiles).read_text())
-    all_features = fc["features"][:args.limit]
+    features = fc["features"]
+    if args.admin1:
+        wanted = {c.strip().upper() for c in args.admin1.split(",") if c.strip()}
+        features = [t for t in features
+                    if (t.get("properties") or {}).get("admin1", "") in wanted]
+    all_features = features[:args.limit]
     start = args.batch_idx * args.batch_size
     end = min(start + args.batch_size, len(all_features))
     batch_features = all_features[start:end]

@@ -13,6 +13,10 @@ on:
         description: "Tiles per parallel runner (smaller = more parallelism)"
         type: number
         default: 50
+      admin1_filter:
+        description: "Comma-separated admin1 codes to include (e.g. 'WLS,SCT'). Empty = ENG+WLS+SCT (all buildable)."
+        type: string
+        default: ""
 
 # `gh release` calls inside the workflow need write access on the
 # repo's contents. The default GITHUB_TOKEN has read on contents — bump
@@ -43,7 +47,8 @@ jobs:
           OUT=$(python3 src/split_batches.py \
             --tiles data/tiles.geojson \
             --limit ${{ inputs.limit }} \
-            --batch-size ${{ inputs.batch_size }})
+            --batch-size ${{ inputs.batch_size }} \
+            --admin1 "${{ inputs.admin1_filter }}")
           echo "Split output: $OUT"
           # Push each top-level key from the JSON onto GITHUB_OUTPUT.
           echo "batches=$(echo "$OUT" | jq -c .batches)"     >> $GITHUB_OUTPUT
@@ -111,7 +116,8 @@ jobs:
             --limit ${{ needs.prep.outputs.n_tiles }} \
             --batch-size ${{ needs.prep.outputs.batch_size }} \
             --batch-idx ${{ matrix.batch_idx }} \
-            --release-tag ${{ needs.prep.outputs.release_tag }}
+            --release-tag ${{ needs.prep.outputs.release_tag }} \
+            --admin1 "${{ inputs.admin1_filter }}"
 
   manifest:
     name: Build manifest.json

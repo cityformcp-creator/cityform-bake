@@ -61,7 +61,7 @@ else:
 # Imports below depend on sys.path patched above.
 from pyproj import Transformer    # noqa: E402
 
-from pipeline.wcs import WCSFetcher                      # noqa: E402
+from pipeline.sources import pick_source                 # noqa: E402
 from pipeline.overpass import OverpassFetcher            # noqa: E402
 from pipeline.preview_mesh import generate_preview_glb   # noqa: E402
 import tier3_with_water                                  # noqa: E402
@@ -124,15 +124,26 @@ def bake(
     print(f"[bake] {tile_id} centre={centre_lat:.4f},{centre_lng:.4f} "
           f"BNG=({centre_e:.0f},{centre_n:.0f})")
 
-    # 2. Fetch DTM + DSM. WCSFetcher caches under cache_dir so repeated
-    # bakes of adjacent tiles share data — important for the GH Actions
-    # workflow where neighbours often share LIDAR cells.
+    # 2. Fetch DTM + DSM. pick_source routes by lat/lng — EA WCS for
+    # England, NRW WFS+Azure for Wales, Scottish Remote Sensing Portal
+    # for Scotland. Cache shared across tiles so adjacent bakes reuse
+    # LIDAR cells.
     t0 = time.time()
-    fetcher = WCSFetcher(cache_dir=cache_dir)
-    dtm_path = fetcher.fetch_geotiff("dtm_1m", bng_e_min, bng_n_min, bng_e_max, bng_n_max)
-    dsm_path = fetcher.fetch_geotiff("dsm_1m_first", bng_e_min, bng_n_min, bng_e_max, bng_n_max)
+    # WGS84 bbox for source routing.
+    lat_min_wgs, _  = _BNG_TO_WGS84.transform(bng_e_min, bng_n_min)[::-1]
+    lat_max_wgs, _  = _BNG_TO_WGS84.transform(bng_e_max, bng_n_max)[::-1]
+    lng_min_wgs = _BNG_TO_WGS84.transform(bng_e_min, bng_n_min)[0]
+    lng_max_wgs = _BNG_TO_WGS84.transform(bng_e_max, bng_n_max)[0]
+    source = pick_source(
+        lat_min=lat_min_wgs, lng_min=lng_min_wgs,
+        lat_max=lat_max_wgs, lng_max=lng_max_wgs,
+        cache_root=cache_dir,
+    )
+    print(f"[bake] DEM source: {source.region_name} ({source.expected_resolution_m:g} m)")
+    dtm_path = source.fetch_dtm(bng_e_min, bng_n_min, bng_e_max, bng_n_max)
+    dsm_path = source.fetch_dsm(bng_e_min, bng_n_min, bng_e_max, bng_n_max)
     timings["fetch_lidar_s"] = round(time.time() - t0, 2)
-    print(f"[bake] LIDAR fetched in {timings['fetch_lidar_s']}s")
+    print(f"[bake] LIDAR fetched in {timings['fetch_lidar_s']}s ({source.region_name})")
 
     # 3. Fetch OSM water + bridges + landmarks + roads. Each fetch is
     # best-effort: a failure → empty list, bake continues with whatever

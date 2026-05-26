@@ -27,9 +27,17 @@ def main() -> int:
                    help="Top-N tiles to bake")
     p.add_argument("--batch-size", type=int, default=50,
                    help="Tiles per matrix job (smaller=more parallelism)")
+    p.add_argument("--admin1", default="",
+                   help="Comma-separated admin1 codes to include (e.g. "
+                        "'WLS,SCT'). Empty = all admin1 codes. Filter "
+                        "applied before --limit so 'top-N within W+S' works.")
     args = p.parse_args()
 
     tiles = json.loads(Path(args.tiles).read_text())["features"]
+    if args.admin1:
+        wanted = {c.strip().upper() for c in args.admin1.split(",") if c.strip()}
+        tiles = [t for t in tiles
+                 if (t.get("properties") or {}).get("admin1", "") in wanted]
     n_tiles = min(len(tiles), args.limit)
     n_batches = (n_tiles + args.batch_size - 1) // args.batch_size
 
