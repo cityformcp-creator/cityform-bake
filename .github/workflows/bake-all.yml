@@ -14,7 +14,15 @@ on:
         type: number
         default: 50
       admin1_filter:
-        description: "Comma-separated admin1 codes to include (e.g. 'WLS,SCT'). Empty = ENG+WLS+SCT (all buildable)."
+        description: "Comma-separated admin1 codes to include (e.g. 'WLS,SCT'). Empty = ENG+WLS+SCT."
+        type: string
+        default: ""
+      use_coverage_index:
+        description: "Filter tiles to those confirmed covered by LIDAR (uses data/coverage_index.json). Strongly recommended for SCT runs."
+        type: boolean
+        default: true
+      skip_baked_tags:
+        description: "Comma-separated release tags whose tiles are already baked — they'll be excluded so this run targets only NEW tiles."
         type: string
         default: ""
 
@@ -44,11 +52,17 @@ jobs:
       - name: Compute batch matrix
         id: split
         run: |
+          COV_FLAG=""
+          if [ "${{ inputs.use_coverage_index }}" = "true" ] && [ -f data/coverage_index.json ]; then
+            COV_FLAG="--coverage-index data/coverage_index.json"
+          fi
           OUT=$(python3 src/split_batches.py \
             --tiles data/tiles.geojson \
             --limit ${{ inputs.limit }} \
             --batch-size ${{ inputs.batch_size }} \
-            --admin1 "${{ inputs.admin1_filter }}")
+            --admin1 "${{ inputs.admin1_filter }}" \
+            $COV_FLAG \
+            --skip-baked-tags "${{ inputs.skip_baked_tags }}")
           echo "Split output: $OUT"
           # Push each top-level key from the JSON onto GITHUB_OUTPUT.
           echo "batches=$(echo "$OUT" | jq -c .batches)"     >> $GITHUB_OUTPUT
@@ -111,13 +125,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          COV_FLAG=""
+          if [ "${{ inputs.use_coverage_index }}" = "true" ] && [ -f data/coverage_index.json ]; then
+            COV_FLAG="--coverage-index data/coverage_index.json"
+          fi
           python3 src/bake_batch.py \
             --tiles data/tiles.geojson \
             --limit ${{ needs.prep.outputs.n_tiles }} \
             --batch-size ${{ needs.prep.outputs.batch_size }} \
             --batch-idx ${{ matrix.batch_idx }} \
             --release-tag ${{ needs.prep.outputs.release_tag }} \
-            --admin1 "${{ inputs.admin1_filter }}"
+            --admin1 "${{ inputs.admin1_filter }}" \
+            $COV_FLAG \
+            --skip-baked-tags "${{ inputs.skip_baked_tags }}"
 
   manifest:
     name: Build manifest.json

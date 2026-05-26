@@ -94,6 +94,10 @@ def main() -> int:
                    help="Comma-separated admin1 codes to include. MUST match "
                         "what split_batches.py was invoked with — otherwise "
                         "the batch_idx slicing won't line up.")
+    p.add_argument("--coverage-index", default="",
+                   help="Path to coverage_index.json. MUST match split_batches.py.")
+    p.add_argument("--skip-baked-tags", default="",
+                   help="Comma-separated release tags to skip. MUST match split_batches.py.")
     args = p.parse_args()
 
     fc = json.loads(Path(args.tiles).read_text())
@@ -102,6 +106,29 @@ def main() -> int:
         wanted = {c.strip().upper() for c in args.admin1.split(",") if c.strip()}
         features = [t for t in features
                     if (t.get("properties") or {}).get("admin1", "") in wanted]
+    if args.coverage_index:
+        idx = json.loads(Path(args.coverage_index).read_text())
+        coverage = idx.get("tile_coverage", {})
+        features = [t for t in features
+                    if coverage.get(t["properties"]["tile_id"], {}).get("covered")]
+    if args.skip_baked_tags:
+        # Lazy import — only needed when this flag is on. Local copy of
+        # the same helper from split_batches.py to keep this script
+        # standalone.
+        import subprocess
+        already: set[str] = set()
+        for tag in [t.strip() for t in args.skip_baked_tags.split(",") if t.strip()]:
+            try:
+                r = subprocess.run(["gh", "release", "view", tag, "--json", "assets"],
+                                   capture_output=True, text=True, check=True)
+            except subprocess.CalledProcessError:
+                continue
+            for a in json.loads(r.stdout).get("assets", []):
+                name = a.get("name", "")
+                if name.endswith("__city.glb"):
+                    already.add(name.split("__", 1)[0])
+        features = [t for t in features
+                    if t["properties"]["tile_id"] not in already]
     all_features = features[:args.limit]
     start = args.batch_idx * args.batch_size
     end = min(start + args.batch_size, len(all_features))
