@@ -150,14 +150,24 @@ def main() -> int:
           f"{len(by_tile) - len(complete)} partial", file=sys.stderr)
 
     tiles: dict[str, dict] = {}
+    skipped_no_meta = 0
     for tile_id, (release_tag, files) in sorted(complete.items()):
         meta = tile_meta_by_id.get(tile_id, {})
+        lat, lng = meta.get("centre_lat"), meta.get("centre_lng")
+        # Defensive: tiles present in older releases but no longer in the
+        # current tiles.geojson (e.g. dropped when admin1 filter tightened
+        # to ENG+WLS+SCT only) get null lat/lng. Leaflet crashes when it
+        # tries to project a null LatLng → whole picker fails to render.
+        # Drop these orphans from the manifest entirely.
+        if lat is None or lng is None:
+            skipped_no_meta += 1
+            continue
         tiles[tile_id] = {
             "place": meta.get("place", ""),
             "place_type": meta.get("place_type", ""),
             "admin1": meta.get("admin1", ""),
-            "lat": meta.get("centre_lat"),
-            "lng": meta.get("centre_lng"),
+            "lat": lat,
+            "lng": lng,
             "release_tag": release_tag,
             **files,
         }
@@ -177,6 +187,10 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(manifest, separators=(',', ':')))
     print(f"[manifest] wrote {args.out} ({len(tiles)} tiles, "
           f"{Path(args.out).stat().st_size / 1024:.1f} KB)", file=sys.stderr)
+    if skipped_no_meta:
+        print(f"[manifest] dropped {skipped_no_meta} tiles with null lat/lng "
+              f"(orphans from older releases not in current tiles.geojson)",
+              file=sys.stderr)
     return 0
 
 
