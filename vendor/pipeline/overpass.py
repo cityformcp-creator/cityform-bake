@@ -28,7 +28,14 @@ BUILDING_QUERY = """[out:json][timeout:60];
 );
 out geom;"""
 
-# Generous water query — same coverage Hugo's existing JS code uses
+# Water query — covers both polygon water (natural=water, riverbank, dock,
+# basin, reservoir) AND linestring waterways (river, stream, canal, drain).
+# Most UK rivers below the Thames are tagged ONLY as waterway=river ways,
+# never as natural=water polygons — without the linestring pull, the bake
+# silently misses them and the print shows the river as elevated land.
+# Linestring waterways are buffered to polygons downstream by
+# osm_waterway_features_to_bng_polygons (uses the OSM width=* tag where
+# present, sensible defaults per class otherwise).
 WATER_QUERY = """[out:json][timeout:60];
 (
   way["natural"="water"]({s},{w},{n},{e});
@@ -42,6 +49,12 @@ WATER_QUERY = """[out:json][timeout:60];
   relation["waterway"="dock"]({s},{w},{n},{e});
   relation["landuse"="basin"]({s},{w},{n},{e});
   relation["landuse"="reservoir"]({s},{w},{n},{e});
+  // Linestring waterways — buffered to polygons downstream. waterway=ditch
+  // intentionally excluded (too small to read on a 1:11000 print and adds
+  // noise from agricultural drainage).
+  way["waterway"="river"]({s},{w},{n},{e});
+  way["waterway"="stream"]({s},{w},{n},{e});
+  way["waterway"="drain"]({s},{w},{n},{e});
 );
 out geom;"""
 

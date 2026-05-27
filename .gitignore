@@ -1,6 +1,7 @@
 # Bake outputs — too large for git, live on GitHub Releases.
 bake-sample/
 bake-output/
+local-bake-output/
 .lidar-cache/
 
 # manifest.json built locally for testing

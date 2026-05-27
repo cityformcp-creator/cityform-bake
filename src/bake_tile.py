@@ -97,6 +97,8 @@ def bake(
     cache_dir: Path | None = None,
     skip_glb: bool = False,
     skip_png: bool = False,
+    admin1: str | None = None,
+    roof_detail: str = "detailed",
 ) -> dict:
     """Run the full STL → GLB → PNG pipeline for one tile.
 
@@ -138,6 +140,7 @@ def bake(
         lat_min=lat_min_wgs, lng_min=lng_min_wgs,
         lat_max=lat_max_wgs, lng_max=lng_max_wgs,
         cache_root=cache_dir,
+        admin1=admin1,
     )
     print(f"[bake] DEM source: {source.region_name} ({source.expected_resolution_m:g} m)")
     dtm_path = source.fetch_dtm(bng_e_min, bng_n_min, bng_e_max, bng_n_max)
@@ -170,11 +173,24 @@ def bake(
     bridge_geojson   = _safe_fetch("bridges",   osm_fetcher.fetch_bridges,   lat_min, lng_min, lat_max, lng_max)
     landmark_geojson = _safe_fetch("landmarks", osm_fetcher.fetch_landmarks, lat_min, lng_min, lat_max, lng_max)
     road_geojson     = _safe_fetch("roads",     osm_fetcher.fetch_roads,     lat_min, lng_min, lat_max, lng_max)
+    # OSM Simple-3D-Buildings (`building:part`) — overrides LIDAR DSM for
+    # tall complex buildings (Shard, Gherkin, Walkie-Talkie, cathedral
+    # spires). Without this, LIDAR scan-line noise on tall roofs renders
+    # as a forest of thin vertical lines. Coverage is concentrated in
+    # London + a few major cities; outside those it's an empty fetch
+    # and the LIDAR fallback runs unchanged.
+    building_parts_geojson = _safe_fetch(
+        "building_parts", osm_fetcher.fetch_building_parts,
+        lat_min, lng_min, lat_max, lng_max,
+    )
     timings["fetch_osm_s"] = round(time.time() - t0, 2)
 
     # Convert each GeoJSON feature set to BNG polygons via the helpers
     # vendored from tier3_with_water.
-    water_polys = tier3_with_water.osm_features_to_bng_polygons(
+    # NOTE: use the waterway-aware helper so linestring rivers
+    # (waterway=river|stream|canal|drain) get buffered into polygons too.
+    # Polygon-only `osm_features_to_bng_polygons` silently misses them.
+    water_polys = tier3_with_water.osm_waterway_features_to_bng_polygons(
         water_geojson.get("features", []) or [])
     # Coastlines need separate conversion — they're LineStrings that get
     # polygonised against the bbox into sea polygons.
@@ -189,9 +205,15 @@ def bake(
         landmark_geojson.get("features", []) or [])
     road_polys = tier3_with_water.osm_road_features_to_bng_geoms(
         road_geojson.get("features", []) or [])
+    # Parse S3DB building:part features into the dict-of-parts the builder
+    # expects: {polygon, height_m, min_height_m, roof_shape, …}. Empty
+    # outside London / major cities — bake then falls back to LIDAR.
+    building_part_dicts = tier3_with_water.osm_building_parts_to_bng(
+        building_parts_geojson.get("features", []) or [])
     print(f"[bake] OSM fetched in {timings['fetch_osm_s']}s "
           f"(water={len(water_polys)}, bridges={len(bridge_polys)}, "
-          f"landmarks={len(landmark_polys)}, roads={len(road_polys)})")
+          f"landmarks={len(landmark_polys)}, roads={len(road_polys)}, "
+          f"s3db_parts={len(building_part_dicts)})")
 
     # 4. Build STL with the full pipeline — water flattened, roads
     # engraved, bridges as separate decks, landmark heights honoured.
@@ -206,6 +228,13 @@ def bake(
         bridge_polygons_bng=bridge_polys,
         landmark_polygons_bng=landmark_polys,
         road_polygons_bng=road_polys,
+        building_part_dicts=building_part_dicts,
+        # roof_detail: "smoothed" (5×5 median) is the bake default — kills
+        # LIDAR scan-line striping that gives modern flat office roofs a
+        # corrugated/vertical-lined appearance on the print. "detailed"
+        # (3×3) preserves more roof texture but lets stripe artefacts
+        # through on tall buildings. Pitched roofs survive both modes.
+        roof_detail=roof_detail,
         out_path=str(stl_path),
     )
     timings["build_stl_s"] = round(time.time() - t0, 2)
@@ -279,6 +308,10 @@ def main() -> int:
     p.add_argument("--out", required=True, help="Output directory for this tile")
     p.add_argument("--skip-glb", action="store_true", help="Skip GLB generation (faster, STL only)")
     p.add_argument("--skip-png", action="store_true", help="Skip preview PNG generation")
+    p.add_argument("--admin1", default="",
+                   help="Geonames country code (ENG/WLS/SCT) — authoritative "
+                        "source routing, bypasses bbox heuristic that mis-routes "
+                        "border-region tiles. Empty = use bbox fallback.")
     args = p.parse_args()
 
     try:
@@ -290,6 +323,7 @@ def main() -> int:
             place_name=args.place,
             skip_glb=args.skip_glb,
             skip_png=args.skip_png,
+            admin1=args.admin1 or None,
         )
     except Exception as exc:    # noqa: BLE001
         print(f"[bake] ERROR baking {args.tile_id}: {exc}", file=sys.stderr)

@@ -241,24 +241,44 @@ def pick_source(
     *, lat_min: float, lng_min: float, lat_max: float, lng_max: float,
     cache_root: Path,
     prefer_resolution_m: float = 1.0,
+    admin1: str | None = None,
 ):
     """Pick the best DEM source for a WGS84 bbox.
 
     Returns a DemSource-compatible object (or raises NotImplementedError
-    when the matching region isn't implemented yet). For partial-overlap
-    bboxes (e.g. straddling the Severn estuary), preference order is
-    England → Wales → Scotland → USA → Copernicus. Picker UI surfaces a
-    warning for these edge cases.
+    when the matching region isn't implemented yet).
+
+    When ``admin1`` is provided (one of 'ENG', 'WLS', 'SCT' — Geonames
+    UK constituent-country codes), it is **authoritative** and the
+    bbox-based heuristic is skipped. This is critical for border-region
+    tiles: e.g. English towns in Cheshire (lat ~53.2, lng ~-2.7) fall
+    inside WALES_BBOX as currently defined and would otherwise be routed
+    to NRW, which has no Welsh data for them. The bake passes admin1
+    from Geonames; the Flask app can pass it when the user has resolved
+    the region.
+
+    Falls back to the legacy bbox check when ``admin1`` is None.
 
     ``prefer_resolution_m`` lets the caller request 2 m LIDAR for big
     bboxes that the 1 m WCS endpoint won't serve. Currently honoured by
     EaWcsSource only — the other regions ignore it.
     """
-    bbox = {"lat_min": lat_min, "lat_max": lat_max, "lng_min": lng_min, "lng_max": lng_max}
-
-    # Per-source cache subdirectory keeps coverage IDs / GeoTIFFs from
-    # different regions out of each other's way.
     cache_root = Path(cache_root)
+
+    # ── Authoritative admin1 routing ──────────────────────────────────
+    if admin1:
+        a = admin1.strip().upper()
+        if a == "ENG":
+            return EaWcsSource(cache_dir=cache_root / "ea",
+                               resolution_m=prefer_resolution_m)
+        if a == "WLS":
+            return WalesLidarSource(cache_dir=cache_root / "wales")
+        if a == "SCT":
+            return ScotlandRsSource(cache_dir=cache_root / "scotland")
+        # Anything else (NIR, foreign) falls through to bbox heuristic.
+
+    # ── Legacy bbox heuristic ─────────────────────────────────────────
+    bbox = {"lat_min": lat_min, "lat_max": lat_max, "lng_min": lng_min, "lng_max": lng_max}
 
     # Order matters: tighter bboxes first so a Cardiff bbox doesn't match
     # ENGLAND_BBOX before WALES_BBOX. England is the catch-all for the GB

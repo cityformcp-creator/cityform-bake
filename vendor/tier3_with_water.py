@@ -47,7 +47,12 @@ _TX_WGS84_TO_BNG = Transformer.from_crs("EPSG:4326", "EPSG:27700", always_xy=Tru
 
 def osm_features_to_bng_polygons(features: list[dict]) -> list[Polygon]:
     """Flatten an Overpass GeoJSON FeatureCollection's features (WGS84) into
-    a list of shapely Polygons in BNG (EPSG:27700)."""
+    a list of shapely Polygons in BNG (EPSG:27700).
+
+    Polygon-only. For water features that may include linestring rivers,
+    call :func:`osm_waterway_features_to_bng_polygons` instead — it handles
+    both polygons AND buffers linestring waterways.
+    """
     out: list[Polygon] = []
     for f in features:
         geom_dict = f.get("geometry")
@@ -65,6 +70,79 @@ def osm_features_to_bng_polygons(features: list[dict]) -> list[Polygon]:
             out.extend(_polygon_wgs_to_bng(p) for p in geom.geoms)
     # Drop invalid/empty after reprojection
     return [p for p in out if not p.is_empty and p.is_valid]
+
+
+# Default linestring widths per OSM waterway class (metres). Used when the
+# feature has no `width=*` tag. Picked to read plausibly on a 1:11000
+# print without making minor streams look like full rivers.
+_WATERWAY_DEFAULT_WIDTH_M = {
+    "river":  8.0,
+    "canal":  6.0,
+    "stream": 3.0,
+    "drain":  2.0,
+}
+
+
+def _parse_width_m(raw) -> float | None:
+    """Parse an OSM width tag (e.g. '5', '5m', '12 ft', '0.5') into metres.
+    Mirrors :func:`_parse_osm_height_m` — the syntax is identical."""
+    return _parse_osm_height_m(raw)
+
+
+def osm_waterway_features_to_bng_polygons(features: list[dict]) -> list[Polygon]:
+    """Flatten OSM water features (WGS84) into BNG Polygons.
+
+    Handles both polygon water (natural=water, waterway=riverbank,
+    landuse=basin/reservoir, waterway=dock) AND linestring waterways
+    (waterway=river/stream/canal/drain). Linestrings are buffered by
+    half the OSM ``width=*`` tag — or a sensible per-class default
+    when the tag is missing (rivers 8 m, canals 6 m, streams 3 m,
+    drains 2 m).
+
+    Why: Most UK rivers below the Thames are tagged as
+    ``waterway=river`` ways with no corresponding polygon. The previous
+    polygon-only fetcher silently dropped them, so the print rendered
+    rivers as elevated land. This helper closes that gap.
+
+    Output is the union of polygon and buffered-linestring geometries;
+    downstream rasterisation merges them via ``geometry_mask``.
+    """
+    out: list[Polygon] = []
+    for f in features:
+        geom_dict = f.get("geometry")
+        if not geom_dict:
+            continue
+        try:
+            geom = shape(geom_dict)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        tags = f.get("properties") or {}
+
+        if isinstance(geom, Polygon):
+            out.append(_polygon_wgs_to_bng(geom))
+        elif isinstance(geom, MultiPolygon):
+            out.extend(_polygon_wgs_to_bng(p) for p in geom.geoms)
+        elif isinstance(geom, (LineString, MultiLineString)):
+            # Width = OSM `width` tag (metres) OR per-class default.
+            ww = (tags.get("waterway") or "").strip().lower()
+            width_m = _parse_width_m(tags.get("width"))
+            if width_m is None or width_m <= 0:
+                width_m = _WATERWAY_DEFAULT_WIDTH_M.get(ww, 4.0)
+            # Buffer radius is half the width.
+            buf = max(0.5, width_m / 2.0)
+            if isinstance(geom, LineString):
+                buffered = _linestring_wgs_to_bng_buffered(geom, buf)
+                if buffered is not None:
+                    out.append(buffered)
+            else:
+                for ls in geom.geoms:
+                    buffered = _linestring_wgs_to_bng_buffered(ls, buf)
+                    if buffered is not None:
+                        out.append(buffered)
+    return [p for p in out if p is not None and not p.is_empty and p.is_valid
+            and isinstance(p, Polygon)]
 
 
 def _polygon_wgs_to_bng(p: Polygon) -> Polygon:
@@ -1456,6 +1534,64 @@ def build_tier3_with_water_stl(
                 applied += 1
         print(f"  OSM 3D: applied {applied} of {len(kept_parts)} kept parts "
               f"(of {len(parts_for_render)} total)")
+
+    # Pre-filter LIDAR spikes — pixels that tower above their immediate
+    # neighbours. These are real-world cranes (UK city centres have many
+    # at any given time), antenna masts, lightning rods, and LIDAR scan-
+    # line single-pulse returns. Visually they appear as a "forest of
+    # thin vertical lines" extending well above the building tops.
+    #
+    # Rule: a pixel is a spike if its DSM value is more than
+    # SPIKE_GAP_M above the median of its surrounding KERNEL×KERNEL
+    # neighbourhood. Real buildings have neighbours at similar heights
+    # (e.g. Gherkin = 100m surrounded by 95m Gherkin pixels → gap ≤ 5m,
+    # preserved). A crane reaching 80m above a 5m car park has a gap
+    # of 75m → flagged. An antenna mast at 50m on a 30m roof has a gap
+    # of ~20m → flagged.
+    #
+    # Protection: pixels under OSM-tagged landmarks (church spires) or
+    # S3DB building:part polygons are skipped — those are authoritative
+    # narrow tall geometry that we want to keep.
+    SPIKE_GAP_M = 15.0          # how much taller than median to flag
+    SPIKE_MIN_HAG_M = 8.0       # only consider pixels above this height
+    SPIKE_KERNEL = 5            # neighbourhood for median
+    hag_pre = np.maximum(dsm - dtm, 0)
+    candidate = hag_pre > SPIKE_MIN_HAG_M
+    if candidate.any():
+        local_median = ndimage.median_filter(dsm, size=SPIKE_KERNEL).astype(np.float32)
+        gap = (dsm.astype(np.float32) - local_median)
+        spikes = candidate & (gap > SPIKE_GAP_M)
+
+        # Build the OSM protection mask (landmark polygons + bp_mask).
+        _h_pre, _w_pre = dsm.shape
+        protect = np.zeros_like(spikes)
+        if bp_mask.any():
+            protect = protect | bp_mask
+        landmark_polys_for_protect = [
+            p for p in (landmark_polygons_bng or [])
+            if isinstance(p, Polygon) and not p.is_empty and p.is_valid
+        ]
+        if rotated and landmark_polys_for_protect:
+            landmark_polys_for_protect = _rotate_polygons_to_local(
+                landmark_polys_for_protect, centre_east, centre_north, angle_deg
+            )
+        if landmark_polys_for_protect:
+            _x_form = transform_from_bounds(*bbox, _w_pre, _h_pre)
+            landmark_protect = geometry_mask(
+                [p.__geo_interface__ for p in landmark_polys_for_protect],
+                out_shape=(_h_pre, _w_pre), transform=_x_form, invert=True,
+            )
+            protect = protect | landmark_protect
+
+        final_spikes = spikes & ~protect
+        if final_spikes.any():
+            n_spikes = int(final_spikes.sum())
+            # Replace spike pixels with the local median — height drops
+            # to be consistent with surrounding rooftops/ground.
+            dsm = np.where(final_spikes, local_median, dsm).astype(np.float32)
+            print(f"  spike filter: suppressed {n_spikes:,} spike pixels "
+                  f"(median +>{SPIKE_GAP_M:.0f}m above neighbours; cranes / "
+                  f"antennas / LIDAR noise)")
 
     # Buildings (same logic as tier3_measured_roofs).
     # iterations=1 keeps narrow features (chimneys, narrow turrets, slim
